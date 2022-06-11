@@ -1,0 +1,45 @@
+#wazuh agent 
+#KV260 ubuntu20.04
+sudo apt-get update && sudo apt-get upgrade -y
+sudo su
+sudo timedatectl set-timezone Asia/Taipei
+sudo curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | apt-key add -
+echo "deb https://packages.wazuh.com/4.x/apt/ stable main" | tee -a /etc/apt/sources.list.d/wazuh.list
+apt-get update
+WAZUH_MANAGER="140.122.184.183" apt-get install wazuh-agent
+systemctl daemon-reload
+systemctl enable wazuh-agent
+systemctl restart wazuh-agent
+
+#Linux
+/var/ossec/bin/agent-auth -m 140.122.184.183 -P password -A KV260
+#Windows
+cd C:\Program Files (x86)\ossec-agent
+agent-auth.exe -m 140.122.184.183 -P password
+
+systemctl restart wazuh-agent
+tail -f /var/ossec/logs/ossec.log
+
+#kali ssh暴力測試
+hydra -l ubuntu -P password.txt 192.168.50.40 ssh -t 4 -V -f
+
+#實時監控檔案完整性測試
+vim /test/testfim
+
+vim /var/ossec/etc/ossec.conf
+#######
+#增加此部分
+
+ <!-- Frequency that syscheck is executed default every 12 hours -->
+    <frequency>43200</frequency>
+
+    <scan_on_start>yes</scan_on_start>
+
+    <!-- Directories to check  (perform all possible verifications) -->
+    <directories>/etc,/usr/bin,/usr/sbin</directories>
+    <directories>/bin,/sbin,/boot</directories>
+    <directories check_all="yes" realtime="yes">/test</directories>
+#######
+
+顯示資料狀態
+

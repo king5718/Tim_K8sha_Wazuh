@@ -1,0 +1,250 @@
+####k8sha-wazuh kubeadm ha cluster
+#all nodes
+#ubuntu更新
+sudo apt-get update && sudo apt-get upgrade -y
+
+#安裝nettool
+sudo apt install net-tools
+
+#disable swap
+sudo vim /etc/fstab 
+# 註解此行：/Swap.img …… 
+sudo vim /etc/sysctl.conf
+vm.swappiness=0 # add this line
+
+# 更改後須重啟 
+sudo shutdown -r now
+
+#set hostname
+sudo vim /etc/hosts
+10.0.2.4 k8sha-m1
+10.0.2.5 k8sha-m2
+10.0.2.6 k8sha-m3
+10.0.2.7 k8sha-w1
+10.0.2.8 k8sha-w2
+10.0.2.9 k8sha-w3
+
+
+#設定ssh無需密碼(opt)
+#on deploy
+ssh-keygen -t rsa
+#按三下enter
+#會在 /home/B_min/.ssh/ 目錄下產生2個檔案: id_rsa , id_rsa.pub
+cd ~/.ssh
+pwd
+#/home/B_min/.ssh
+scp id_rsa.pub tim@10.0.2.X:~/
+
+#on other nodes
+mkdir /home/tim/.ssh
+mv id_rsa.pub /home/tim/.ssh/
+cat /home/tim/.ssh/id_rsa.pub >> /home/tim/.ssh/authorized_keys
+chmod 644 ~/.ssh/authorized_keys
+#測試
+#on ansible
+ssh tim@10.0.2.X
+
+#sudo不用密碼
+sudo vim /etc/sudoers
+%sudo   ALL=(ALL:ALL) NOPASSWD:ALL
+
+#Enable IPv4 Forwarding
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+echo "net.bridge.bridge-nf-call-iptables = 1" | sudo tee -a /etc/sysctl.d/99-kubernetes-cri.conf
+echo "net.ipv4.ip_forward = 1" | sudo tee -a /etc/sysctl.d/99-kubernetes-cri.conf
+echo "net.bridge.bridge-nf-call-ip6tables = 1" | sudo tee -a /etc/sysctl.d/99-kubernetes-cri.conf
+
+sudo sysctl --system
+
+# Set the versions to use
+export OS=xUbuntu_20.04
+
+export VERSION=1.23
+
+#Add repos and keys   
+echo "deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/$VERSION/$OS/ /" | sudo tee -a /etc/apt/sources.list.d/cri-0.list
+
+curl -L http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/$VERSION/$OS/Release.key | sudo apt-key add -
+
+echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/ /" | sudo tee -a /etc/apt/sources.list.d/libcontainers.list
+
+sudo apt-get update
+
+# Install cri-o
+sudo apt-get install -y cri-o cri-o-runc podman buildah
+
+sudo systemctl daemon-reload
+
+sudo systemctl enable crio
+
+sudo systemctl start crio
+
+# In case you need to check status:     systemctl status crio
+
+# Add Kubernetes repo and software 
+
+sudo sh -c "echo 'deb http://apt.kubernetes.io/ kubernetes-xenial main' >> /etc/apt/sources.list.d/kubernetes.list"
+
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+
+sudo apt-get update
+
+sudo apt-get install -y kubeadm=1.23.4-00 kubelet=1.23.4-00 kubectl=1.23.4-00
+
+sudo apt-mark hold kubeadm kubelet kubectl
+
+#生成kube-vip #!!!!!!!root!!!!!!!
+sudo su
+export VIP=10.0.2.10
+export INTERFACE=enp0s3
+podman image pull docker.io/plndr/kube-vip:v0.3.8
+podman run --rm --network=host --entrypoint=/kube-vip ghcr.io/kube-vip/kube-vip:v0.3.8 \
+  manifest pod \
+  --interface $INTERFACE \
+  --vip $VIP \
+  --controlplane \
+  --services \
+  --arp \
+  --leaderElection | tee  /etc/kubernetes/manifests/kube-vip.yaml
+
+
+#配置kubeadm-config
+sudo nano kubeadm-config.yaml
+######################################
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: "/var/run/crio/crio.sock"
+  imagePullPolicy: IfNotPresent
+---
+kind: ClusterConfiguration
+apiVersion: kubeadm.k8s.io/v1beta3
+kubernetesVersion: v1.23.4
+clusterName: kubernetes
+certificatesDir: /etc/kubernetes/pki
+imageRepository: k8s.gcr.io
+controlPlaneEndpoint: "10.0.2.10:6443"  # 填 apiserver 的 vip 地址，或者整個域名也行，但是就得加 /etc/hosts 或者內網 DNS 解析
+networking:
+  serviceSubnet: "10.96.0.0/16"
+  podSubnet: "10.244.0.0/16"
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+######################################
+exit
+#init cluster
+sudo kubeadm init --config=kubeadm-config.yaml --upload-certs
+
+###############join master#############
+sudo  kubeadm join 10.0.2.100:6443 --token uw34sa.w1x32k3j7bhc98dt \
+        --discovery-token-ca-cert-hash sha256:8be6cb64ab77c4015e5ad29fc1f501f3a21d0e2f55ceb9545e585c0cd3b4c747 \
+        --control-plane --certificate-key d8a4e40c4a65af755fd59a9aed705e9cf5fcc9060232454fd6096b6ddb435415
+
+
+
+#Please note that the certificate-key gives access to cluster sensitive data, keep it secret!
+#As a safeguard, uploaded-certs will be deleted in two hours; If necessary, you can use
+#"kubeadm init phase upload-certs --upload-certs" to reload certs afterward.
+
+###############join worker#############
+#Then you can join any number of worker nodes by running the following on each as root:
+
+sudo kubeadm join 10.0.2.100:6443 --token uw34sa.w1x32k3j7bhc98dt \
+        --discovery-token-ca-cert-hash sha256:8be6cb64ab77c4015e5ad29fc1f501f3a21d0e2f55ceb9545e585c0cd3b4c747
+
+#################################  
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+#加入cp後須重新生成vip
+#生成kube-vip #!!!!!!!root!!!!!!!
+sudo su
+export VIP=10.0.2.100
+export INTERFACE=enp0s3
+podman image pull docker.io/plndr/kube-vip:v0.3.8
+podman run --rm --network=host --entrypoint=/kube-vip ghcr.io/kube-vip/kube-vip:v0.3.8 \
+  manifest pod \
+  --interface $INTERFACE \
+  --vip $VIP \
+  --controlplane \
+  --services \
+  --arp \
+  --leaderElection | tee  /etc/kubernetes/manifests/kube-vip.yaml
+#
+kubectl get pods -A | grep vip
+
+#calico
+curl https://docs.projectcalico.org/manifests/calico.yaml -O 
+kubectl apply -f calico.yaml
+kubectl logs -f kube-vip-k8sha-m1 -n=kube-system
+
+#測試高可用
+kubectl logs -f k8sha-m1 -n=kube-system
+
+#wazuh
+git clone https://github.com/wazuh/wazuh-kubernetes.git
+cd wazuh-kubernetes
+bash wazuh/certs/kibana_http/generate_certs.sh
+bash wazuh/certs/odfe_cluster/generate_certs.sh
+
+#創建pv 配置yaml
+sudo nano wazuh-pv1.yaml
+sudo nano wazuh-pv2.yaml
+sudo nano wazuh-pv3.yaml
+
+#########################
+## pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wazuh-pv1 #2#3
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: wazuh-storage
+  hostPath:
+    path: /tmp
+#########################
+kubectl apply -f wazuh-pv1.yaml
+kubectl apply -f wazuh-pv2.yaml
+kubectl apply -f wazuh-pv3.yaml
+
+kubectl apply -k envs/local-env/
+
+kubectl get pods --namespace=wazuh
+kubectl get svc -n=wazuh
+kubectl -n wazuh port-forward service/kibana 8443:443
+
+#確認service、pod都有運行且機器是ready最後確認網站可以成功連線
+kubectl get svc -n=wazuh
+kubectl get pod -n=wazuh
+kubectl get node
+
+#配置NAT網路
+#連上網址(https://140.122.184.183:8443)(外往需使用固定IP，內網只能動態IP)
+
+
+######完成
+
+
+
+
+
+
+###########error
+kubectl delete -k envs/local-env/ --force
+
+###########刪除cluster
+sudo kubeadm reset
+sudo apt-get purge kubeadm kubectl kubelet kubernetes-cni kube*   
+sudo apt-get autoremove  
+sudo rm -rf ~/.kube
+
+

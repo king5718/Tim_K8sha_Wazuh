@@ -1,0 +1,57 @@
+#Wazuh 服務佈署
+
+#wazuh
+git clone https://github.com/king5718/Tim_K8s_WazuhHA.git
+cd wazuh-kubernetes
+bash wazuh/certs/kibana_http/generate_certs.sh
+bash wazuh/certs/odfe_cluster/generate_certs.sh
+
+#創建pv 配置yaml
+sudo nano wazuh-pv1.yaml
+sudo nano wazuh-pv2.yaml
+sudo nano wazuh-pv3.yaml
+
+#########################
+## pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wazuh-pv1 #2#3
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: wazuh-storage
+  hostPath:
+    path: /tmp
+#########################
+kubectl apply -f wazuh-pv1.yaml
+kubectl apply -f wazuh-pv2.yaml
+kubectl apply -f wazuh-pv3.yaml
+
+kubectl apply -k envs/local-env/
+
+kubectl get pods --namespace=wazuh
+kubectl get svc -n=wazuh
+kubectl -n wazuh port-forward service/kibana 8443:443
+
+#確認service、pod都有運行且機器是ready最後確認網站可以成功連線
+kubectl get svc -n=wazuh
+kubectl get pod -n=wazuh
+kubectl get node
+
+#配置NAT網路(參考PPT圖)
+#連上網址(https://140.122.184.183:8443)(外往需使用固定IP，內網只能動態IP)
+
+
+######完成
+
+
+
+
+
+
+###########error
+kubectl delete -k envs/local-env/ --force
